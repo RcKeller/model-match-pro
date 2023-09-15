@@ -9,10 +9,9 @@ from .serializers import LLMSerializer, PromptSerializer, ResponsesSerializer
 
 from rest_framework import status
 import httpx
+from concurrent.futures import ThreadPoolExecutor  # Import ThreadPoolExecutor
 
 from django.conf import settings
-
-
 
 if not settings.API_TOKEN:
     raise ValueError("API_TOKEN is not set in .env file.")
@@ -21,27 +20,26 @@ HEADERS = {"Authorization": f"Bearer {settings.API_TOKEN}"}
 BASE_API_URL = "https://api-inference.huggingface.co/models/"
 
 def make_api_call(api_code, input_str, timeout=500):
-        api_url = f"{BASE_API_URL}{api_code}"
-        payload = {"inputs": input_str}
+    api_url = f"{BASE_API_URL}{api_code}"
+    payload = {"inputs": input_str}
 
-        print(f"Making API call to {api_url} with query: {input_str}")
-        with httpx.Client() as client:
-            response = client.post(api_url, headers=HEADERS, json=payload, timeout=timeout)
-        print(f"Received status code {response.status_code} from {api_url}")
-        if response.status_code == 302:
-            redirect_url = response.headers.get('Location')
-            print("Redirecting to:", redirect_url)
-            error_message = f"Redirecting to: {redirect_url}"
-            return None, error_message
+    print(f"Making API call to {api_url} with query: {input_str}")
+    with httpx.Client() as client:
+        response = client.post(api_url, headers=HEADERS, json=payload, timeout=timeout)
+    print(f"Received status code {response.status_code} from {api_url}")
+    if response.status_code == 302:
+        redirect_url = response.headers.get('Location')
+        print("Redirecting to:", redirect_url)
+        error_message = f"Redirecting to: {redirect_url}"
+        return None, error_message
 
-        if response.status_code != 200:
-            error_message = f"API call failed for model {api_code} with status code {response.status_code}: {response.text}"
-            return None, error_message
+    if response.status_code != 200:
+        error_message = f"API call failed for model {api_code} with status code {response.status_code}: {response.text}"
+        return None, error_message
 
-        api_response = response.json()
+    api_response = response.json()
 
-
-        return api_response, None
+    return api_response, None
 
 # lists and creates prompts
 class PromptList(ListCreateAPIView):
@@ -59,10 +57,10 @@ class PromptList(ListCreateAPIView):
             prompt_id = response.data.get('id')
             prompt_instance = Prompt.objects.get(pk=prompt_id)
             print("Fetched Prompt instance:", prompt_instance)
-            self.create_responses(prompt_instance,request, *args, **kwargs)
+            self.create_responses(prompt_instance, request, *args, **kwargs)
         return response
 
-    def create_responses(self,prompt,request, *args, **kwargs):
+    def create_responses(self, prompt, request, *args, **kwargs):
         input_str = prompt.input_str
         lang_models = prompt.lang_models
 
@@ -84,12 +82,13 @@ class PromptList(ListCreateAPIView):
             else:
                 return error
 
-        # results = asyncio.gather(*(fetch_create_response(model_id) for model_id in lang_models))
-        results = [fetch_create_response(model_id) for model_id in lang_models]
+        # Use ThreadPoolExecutor to run API calls in parallel
+        with ThreadPoolExecutor(max_workers=len(lang_models)) as executor:
+            results = list(executor.map(fetch_create_response, lang_models))
 
         # Separate results into responses and errors
-        api_responses_list = [result for result in results if not 'error' in result]
-        error_messages = [result for result in results if 'error' in result]
+        api_responses_list = [result for result in results if not isinstance(result, str) or 'error' not in result]
+        error_messages = [result for result in results if isinstance(result, str) and 'error' in result]
 
         if error_messages:
             custom_data = {
@@ -100,7 +99,7 @@ class PromptList(ListCreateAPIView):
 
         print(api_responses_list)
 
-# allows user to edit individual responses
+# allows the user to edit individual responses
 class PromptDetail(RetrieveUpdateDestroyAPIView):
     permission_classes = (IsOwnerOrReadOnly,)
     serializer_class = PromptSerializer
@@ -108,7 +107,6 @@ class PromptDetail(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         user = self.request.user
         return Prompt.objects.filter(user_id=user)
-
 
 class ResponseList(ListAPIView):  # lists responses specific to a single prompt
     permission_classes = (IsOwnerOrReadOnly,)
