@@ -63,20 +63,15 @@ class PromptList(ListCreateAPIView):
         return response
 
     def create_responses(self,prompt,request, *args, **kwargs):
-        print("Type of 'prompt' parameter:", type(prompt))
-        print("Value of 'prompt' parameter:", prompt)
-        print("Creating responses for the prompt...")
         input_str = prompt.input_str
-        print(input_str)
-        print(prompt.input_str)
         lang_models = prompt.lang_models
-        print(lang_models)
 
-        error_messages = []
-        api_responses_list = []  # List to accumulate API responses
+        # Fetch all required LLM objects at once
+        lang_model_objects = {lm.id: lm for lm in LLM.objects.filter(pk__in=lang_models)}
+
         print("About to enter the loop with lang_models:", lang_models)
-        for model_id in lang_models:
-            lang_model = LLM.objects.get(pk=model_id)
+        def fetch_create_response(model_id):
+            lang_model = lang_model_objects[model_id]
             print("Processing lang_model with ID:", model_id,
                   "and API code:", lang_model.api_code)
             api_response, error = make_api_call(lang_model.api_code, input_str)
@@ -85,16 +80,23 @@ class PromptList(ListCreateAPIView):
                 Responses.objects.create(
                     prompt_id=prompt, lang_model_id=lang_model, response=api_response[0]['generated_text'])
                 # Append the response to the list
-                api_responses_list.append(api_response[0]['generated_text'])
+                return api_response[0]['generated_text']
             else:
-                error_messages.append(error)
+                return error
+
+        # results = asyncio.gather(*(fetch_create_response(model_id) for model_id in lang_models))
+        results = [fetch_create_response(model_id) for model_id in lang_models]
+
+        # Separate results into responses and errors
+        api_responses_list = [result for result in results if not 'error' in result]
+        error_messages = [result for result in results if 'error' in result]
 
         if error_messages:
             custom_data = {
                 'status': 'Some models did not return results.',
                 'errors': error_messages
             }
-            prompt.error_messages=custom_data
+            prompt.error_messages = custom_data
 
         print(api_responses_list)
 
