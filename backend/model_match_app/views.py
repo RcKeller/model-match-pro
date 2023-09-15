@@ -16,30 +16,35 @@ from django.conf import settings
 if not settings.API_TOKEN:
     raise ValueError("API_TOKEN is not set in .env file.")
 
-HEADERS = {"Authorization": f"Bearer {settings.API_TOKEN}"}
-BASE_API_URL = "https://api-inference.huggingface.co/models/"
+class LLMAPIClient:
+    BASE_API_URL = "https://api-inference.huggingface.co/models/"
 
-def make_api_call(api_code, input_str, timeout=500):
-    api_url = f"{BASE_API_URL}{api_code}"
-    payload = {"inputs": input_str}
+    def __init__(self, api_token):
+        self.headers = {"Authorization": f"Bearer {api_token}"}
+        self.client = httpx.Client()
 
-    print(f"Making API call to {api_url} with query: {input_str}")
-    with httpx.Client() as client:
-        response = client.post(api_url, headers=HEADERS, json=payload, timeout=timeout)
-    print(f"Received status code {response.status_code} from {api_url}")
-    if response.status_code == 302:
-        redirect_url = response.headers.get('Location')
-        print("Redirecting to:", redirect_url)
-        error_message = f"Redirecting to: {redirect_url}"
-        return None, error_message
+    def make_api_call(self, api_code, input_str, timeout=500):
+        api_url = f"{self.BASE_API_URL}{api_code}"
+        payload = {"inputs": input_str}
 
-    if response.status_code != 200:
-        error_message = f"API call failed for model {api_code} with status code {response.status_code}: {response.text}"
-        return None, error_message
+        print(f"Making API call to {api_url} with query: {input_str}")
+        response = self.client.post(api_url, headers=self.headers, json=payload, timeout=timeout)
+        print(f"Received status code {response.status_code} from {api_url}")
 
-    api_response = response.json()
+        if response.status_code == 302:
+            redirect_url = response.headers.get('Location')
+            print("Redirecting to:", redirect_url)
+            error_message = f"Redirecting to: {redirect_url}"
+            return None, error_message
 
-    return api_response, None
+        if response.status_code != 200:
+            error_message = f"API call failed for model {api_code} with status code {response.status_code}: {response.text}"
+            return None, error_message
+
+        api_response = response.json()
+        return api_response, None
+
+llm_api_client = LLMAPIClient(settings.API_TOKEN)
 
 # lists and creates prompts
 class PromptList(ListCreateAPIView):
@@ -72,7 +77,7 @@ class PromptList(ListCreateAPIView):
             lang_model = lang_model_objects[model_id]
             print("Processing lang_model with ID:", model_id,
                   "and API code:", lang_model.api_code)
-            api_response, error = make_api_call(lang_model.api_code, input_str)
+            api_response, error = llm_api_client.make_api_call(lang_model.api_code, input_str)
 
             if api_response:
                 Responses.objects.create(
